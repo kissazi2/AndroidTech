@@ -1,8 +1,10 @@
-对大多数Android的开发者来说，最经常的操作莫过于进行UI设计，但你可曾想过View中的背景是怎么加载到View上的。为什么要了解这个操作呢？一个是因为好奇心，第二个是因为如果要进行app的换肤，必须了解Android加载资源的流程。
+对大多数Android的开发者来说，最经常的操作莫过于对界面进行布局，View中背景图片的加载是最经常做的。但是我们很少关注这个过程，这篇文章主要解析view中背景图片加载的流程。了解view中背景图片的加载（资源的加载）可以让我们对资源加载的过程进行一些优化，另外当需要进行整个应用的换肤时，也可以更得心应手。
 
-不管是从Activity.setContentView还是LayoutInflater.inflate(...)方法进行View的初始化，最终都会到达LayoutInflater.inflate(XmlPullParser parser, ViewGroup root, boolean attachToRoot)这个方法中。在这里我们主要关注View的背景图片加载，对于XML如何解析和加载就放过了。
+View图片的加载，我们最常见的就是通过在XML文件当中进行drawable的设置，然后让Android系统帮我们完成，或者手动写代码加载成Bitmap，然后加载到View上。这篇文章主要分析Android在什么时候以及怎么帮我们完成背景图片的加载的，那么我们就从Activity.setContentView还是LayoutInflater.inflate(...)方法开始分析。
 
+不管是从[Activity.setContentView(...)](http://developer.android.com/reference/android/app/Activity.html#setContentView(android.view.View))还是[LayoutInflater.inflate(...)](http://developer.android.com/reference/android/view/LayoutInflater.html)方法进行View的初始化，最终都会到达LayoutInflater.inflate(XmlPullParser parser, ViewGroup root, boolean attachToRoot)这个方法中。在这里我们主要关注View的背景图片加载，对于XML如何解析和加载就放过了。
 
+``` java
     public View inflate(XmlPullParser parser, ViewGroup root, boolean attachToRoot) {
         synchronized (mConstructorArgs) {
             final AttributeSet attrs = Xml.asAttributeSet(parser);
@@ -105,12 +107,17 @@
             return result;
         }
     }
-上面这么长一串代码，其实思路很清晰，就是针对XML文件进行解析，然后利用解析的结果初始化View，紧接着将View的Layout参数设置到View上，然后将View添加到它的父控件上。
-为了了解View是怎么被加载出来的，我们只需要了解
-                    
-	temp = createViewFromTag(root, name, attrs);
+```
 
+上面这么长一串代码，其实思路很清晰，就是针对XML文件进行解析，然后根据XML解析出的每一个节点进行View的初始化，紧接着将View的Layout参数设置到View上，然后将View添加到它的父控件上。
+为了了解View是怎么被加载出来的，我们只需要了解
+           
+``` java         
+	temp = createViewFromTag(root, name, attrs);
+```
 跟进去看看。
+
+``` java
     /*
      * default visibility so the BridgeInflater can override it.
      */
@@ -158,21 +165,31 @@
             throw ie;
         }
     }
-上面代码的重点在于try...Catch里的内容。try包起来的东西就是对View进行初始化，注意到上面代码中有几个Factory，这些Factory可以在View进行初始化，也就是说其实我们可以干预View的初始化。从上面代码我们可以知道，当View被Factory初始化后，那么这个View就不会再被系统给重新初始化一遍。那么我们可以在onCreate(...)的this.setContentView(...)之前设置LayoutInflater.Factory。
+```
 
+上面代码的重点在于try...Catch里的内容。try包起来的东西就是对View进行初始化，注意到上面代码中有几个Factory，这些Factory可以在View进行初始化，也就是说其实我们可以在这里干预View的初始化。从上面代码我们可以知道，如果我们自定义了一个Factory，那么当前要初始化的View会优先被我们自定义的Factory初始化，而不通过系统默认的Factory初始化。那么如果我们要自定义Factory，应该在哪里定义呢？容易想到，Factory必须要赶在资源加载前自定义完成，所以我们应该在onCreate(...)的this.setContentView(...)之前设置LayoutInflater.Factory。
+``` java
 		getLayoutInflater().setFactory(factory);
+```
 接下来我们看到上面函数里面的
 
+``` java
  	if (-1 == name.indexOf('.')) {
         view = onCreateView(parent, name, attrs);
     } else {
         view = createView(name, null, attrs);
     }
+```
+
 这段函数就是对View进行初始化，有两种情况，一种是系统自带的View，它在
 
+``` java
 	if (-1 == name.indexOf('.'))
+```
+
 这里面进行初始化，因为如果是系统自带的View，传入的那么一般不带系统的前缀"android.view."。另一个分支初始化的是我们自定义的View。我们跟进onCreateView看看。
 
+``` java
  	protected View onCreateView(String name, AttributeSet attrs)
             throws ClassNotFoundException {
         return createView(name, "android.view.", attrs);
@@ -254,12 +271,15 @@
             throw ie;
         }
     }
+```
 从onCreateView(...)中我们知道，其实createViewFromTag(...)中对View的初始化最终都是通过createView(...)这个函数进行初始化的，不同只在于系统控件需要通过onCreateView(...)加上前缀，以便类加载器(ClassLoader)正确地通过类所在的包初始化这个类。createView(...)这个函数的思路很清晰，不看catch里面的内容，try里面开头的两个分支就是用来将所要用的类构造函数提取出来，Android系统会对使用过的类构造函数进行缓存，因为像TextView这些常用的控件可能会被使用很多次。接下来，就是通过类构造函数对View进行初始化了。我们注意到传入构造函数的mConstructorArgs是一个包含两个元素的数组。
 
+``` java
 	final Object[] mConstructorArgs = new Object[2];
+```
 
 那么我们就很清楚了，它就是调用系统控件中对应两个参数的构造函数。为了方便，我们就从最基础的View进行分析。
-
+``` java
  	public View(Context context, AttributeSet attrs) {
         this(context, attrs, 0);
     }
@@ -326,12 +346,13 @@
 			
 			//省略一大串无关的函数
 	}
-
+```
 由于我们只关注View中的背景图是怎么加载的，注意这个函数其实就是遍历AttributeSet attrs这个东西，然后对View的各个属性进行初始化。我们直接进入
-
+``` java
 	background = a.getDrawable(attr);
+```
 这里看看(TypedArray.getDrawable)。
-
+``` java
     public Drawable getDrawable(int index) {
         final TypedValue value = mValue;
         if (getValueAt(index*AssetManager.STYLE_NUM_ENTRIES, value)) {
@@ -348,9 +369,9 @@
         }
         return null;
     }
-
+```
 我们发现它调用mResources.loadDrawable(...)，进去看看。
-
+``` java
     /*package*/ Drawable loadDrawable(TypedValue value, int id)
             throws NotFoundException {
 
@@ -471,4 +492,7 @@
 
         return dr;
     }
+```
 就是这个函数了，所有View的背景的加载都在这里了。这个函数的逻辑就比较复杂了，大体说来就是根据背景的类型（纯颜色、定义在XML文件中的，或者是一张静态的背景），如果缓存里面有，就直接用缓存里的。
+
+总结一下，经过上面的分析，我们知道了，Android就是在Activity.setContentView(...)中为我们进行资源文件的加载，精确到具体的函数的话，资源文件的加载就是在每一个被初始化的View的构造函数中进行加载的。
